@@ -185,13 +185,14 @@ class Dispatcher(cfg: Agent[Config], name: String, restoreState: Boolean) extend
 
   private def saveState = {
     val saved = DispatcherState(state, buf, inFlight, serverData)
-    Factory.save(saved, savePath)
+    val f = new File(savePath)
+    Factory.jsonMapper.writeValue(f, saved)
   }
 
   private def loadState = {
     val f = new File(savePath)
     if (f.canRead()) {
-      val saved = Factory.mapper.readValue(f, classOf[DispatcherState])
+      val saved = Factory.jsonMapper.readValue(f, classOf[DispatcherState])
       restoreState(saved)
     } else log.debug(s"no state saved for $self")
   }

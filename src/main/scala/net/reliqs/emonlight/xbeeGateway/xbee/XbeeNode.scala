@@ -29,6 +29,8 @@ import net.reliqs.emonlight.xbeeGateway.ProbeType
 import net.reliqs.emonlight.xbeeGateway.QData
 import net.reliqs.emonlight.xbeeGateway.xbee.Event.MessageHandler
 import scala.util.Random
+import com.digi.xbee.api.utils.HexUtils
+import scala.collection.mutable.ArrayBuffer
 
 object XbeeNode {
 
@@ -51,11 +53,11 @@ object XbeeNode {
   def toShort(b: Array[Byte]): Short = ByteUtils.byteArrayToShort(b)
 
   val InitMaxRetry = 5
-  val InitDelay = 3000
-  val InitDelayRandomRange = 2000
+  val InitDelay = 30000
+  val InitDelayRandomRange = 10000
 }
 
-class XbeeNode(val address: String, val device: RemoteXBeeDevice, val node: Node, val dsp: Dispatcher)
+class XbeeNode(val address: String, val device: RemoteXBeeDevice, val node: Node, val proc: Processor, val dsp: Dispatcher)
     extends XbeeNodeExt with NodeEventHandling with LazyLogging {
   import Processor._
   import XbeeNode._
@@ -71,9 +73,9 @@ class XbeeNode(val address: String, val device: RemoteXBeeDevice, val node: Node
   var lastTime = collection.mutable.Map[Probe, Long]().withDefaultValue(0L)
   var nextSynch = Instant.EPOCH
   var synchRetries: Int = 0
-  var ignoreNextVerifySynch = false
 
-  dsp.queueEvent(NodeInit(this))
+  //  dsp.queueEvent(NodeInit(this))
+  processInit(Duration.Zero, 1)
 
   override def handle: MessageHandler = {
     case NodeDataReceived(_, msg, time) =>
@@ -85,17 +87,12 @@ class XbeeNode(val address: String, val device: RemoteXBeeDevice, val node: Node
       handleNodeDisconnection()
       processIOSampleReceived(sample, time)
     case NodeInit(_, time, retry) => processInit(time, retry)
-    case VerifySynchAfter(_, _) =>
-      if (!ignoreNextVerifySynch) sendCmdSynch() else ignoreNextVerifySynch = false
-      Seq.empty
-    case VerifySynchCancel(_) =>
-      ignoreNextVerifySynch = true
-      Seq.empty
+    case VerifySynchAfter(_, _) => sendCmdSynch(); Seq.empty
     case NodeDisconnectedAfter(_, _, retry) => processNodeDisconnectedEvent(retry)
   }
 
   def handleNodeDisconnection() {
-    while (dsp.queue.remove(NodeDisconnectedAfter(this, Duration.Zero))) {}
+    dsp.removeEvent(NodeDisconnectedAfter(this, Duration.Zero))
     //    assert(ok)
     val delay = ((node.sampleTime * NodeDiscoveredMax) millis)
     logger.debug(s"$this: next NodeDisconnected verification in $delay")
@@ -105,22 +102,60 @@ class XbeeNode(val address: String, val device: RemoteXBeeDevice, val node: Node
   def probeMap(line: IOLine, pt: ProbeType.ProbeType): Option[Probe] =
     node.lines.find(_.line == line).flatMap(_.probes.find(_.probeType == pt))
 
-  def init() {
+  def processInit(time: Duration, retry: Int): Seq[QData] = {
+    if (proc.cfg.applyConfig && proc.state != Processor.State.Ready) {
+      dsp.queueEvent(NodeInit(this, (InitDelay + Random.nextInt(InitDelayRandomRange)) millis))
+    } else {
+      dsp.queueEvent(SignalStartNodeInit())
+      try {
+        init(retry)
+      } catch {
+        case e: XBeeException =>
+          val delay = ((InitDelay + Random.nextInt(InitDelayRandomRange)) millis)
+          val r = retry + 1
+          if (r > InitMaxRetry) {
+            logger.warn(s"$this: error in initialization, maximum number of initialization tentatives exceeded ($r), giving up", e)
+            dsp.queueEvent(RemoveActiveNode(address))
+          } else {
+            logger.info(s"$this: error in initialization, tentative n. $r will be tried after $delay", e)
+            dsp.removeEvent(NodeInit(this, delay, r))
+            dsp.queueEvent(NodeInit(this, delay, r))
+          }
+      } finally {
+        dsp.queueEvent(SignalEndNodeInit())
+      }
+    }
+    Seq.empty
+  }
+
+  def init(retry: Int) {
     logger.info(s"$this: starting initialization")
-    xbeeSetup()
+    if (proc.cfg.applyConfig)
+      xbeeSetup(retry)
+    dsp.removeEvent(NodeDisconnectedAfter(this, Duration.Zero))
     dsp.queueEvent(NodeDisconnectedAfter(this, node.sampleTime() * NodeDiscoveredMax millis))
     if (node.opMode != OpMode.EndDevice)
-      dsp.queueEvent(VerifySynchAfter(this, 0 seconds))
+      dsp.queueEvent(VerifySynchAfter(this))
     state = NodeState.Initialized
     logger.info(s"$this: successfully initialized")
   }
 
-  def xbeeSetup() {
+  /**
+   * Xbee setup.
+   * TODO send a RESET in case the configuration fails too many times.
+   * TODO read first configuration and apply new conf only if it is different
+   */
+  def xbeeSetup(retry: Int) {
     device.enableApplyConfigurationChanges(true)
-    if (node.opMode == OpMode.EndDevice || toShort(device.getParameter("SM")) != 1) {
-      device.setParameter("CB", Array[Byte](1))
-      logger.info(s"$this: commissioning pushbutton command sent successfully")
+    if (retry > 1) {
+      device.reset()
+      Thread.sleep(1000)
     }
+    //    if (node.opMode == OpMode.EndDevice || toShort(device.getParameter("SM")) != 0) {
+    device.setParameter("CB", Array[Byte](1))
+    logger.info(s"$this: commissioning pushbutton command sent successfully")
+    Thread.sleep(1000)
+    //    }
     val sampleTime = node.sampleTime
     device.enableApplyConfigurationChanges(false)
     if (node.opMode == OpMode.EndDevice) {
@@ -132,24 +167,21 @@ class XbeeNode(val address: String, val device: RemoteXBeeDevice, val node: Node
     }
     if (node.opMode == OpMode.Router) {
       logger.debug(s"$this: configured as a router")
-      device.setParameter("SM", Array[Byte](1))
+      device.setParameter("SM", Array[Byte](0))
     }
     node.lines.foreach(l => {
       device.setIOConfiguration(l.line, l.mode)
     })
-    if (node.lines.exists(_.access == LineAccess.Sampled)) {
-      device.setIOSamplingRate(sampleTime)
-    }
+    device.setIOSamplingRate((if (node.lines.exists(_.access == LineAccess.Sampled)) sampleTime else 0))
     device.applyChanges()
     device.writeChanges()
 
-    val pulseSampleTime = if (node.lines.exists(_.probes.exists(p => p.probeType == ProbeType.Pulse))) sampleTime else 0
-    val dht22SampleTime = if (node.lines.exists(_.probes.exists(p => p.probeType == ProbeType.DHT22_T))) sampleTime else 0
-    sendCmdPulseSampleTime(pulseSampleTime)
-    sendCmdDht22SampleTime(dht22SampleTime)
-
     if (node.opMode == OpMode.EndDevice)
       device.executeParameter("SI")
+//    else {
+//      device.reset()
+////      device.executeParameter("FR")
+//    }
   }
 
   def processDataReceivedMessage(msg: XBeeMessage, time: Instant): Seq[QData] = {
@@ -192,7 +224,9 @@ class XbeeNode(val address: String, val device: RemoteXBeeDevice, val node: Node
         nextSynch = now.plus(SynchLongTimeOutHours, ChronoUnit.HOURS)
         uptimeOffsetInMillis = offset
         //          synchScheduler.cancel()
-        dsp.queueEvent(VerifySynchCancel(this))
+        dsp.removeEvent(VerifySynchAfter(this))
+        // after each Xbee reset we have to reconfigure sample times for pulses and dht22
+        sendCmdSampleTime()
         state = NodeState.InSynch
         synchRetries = 0
         // update offset of queued data
@@ -205,10 +239,23 @@ class XbeeNode(val address: String, val device: RemoteXBeeDevice, val node: Node
     }
   }
 
-  def sendCmdSynch() = {
+  def sendCmdSynch() {
     val b = createSynchMessage()
     dsp.queueEvent(SendDataAsync(device, b))
     //      mapper ! XbeeMapperActor.SendDataAsync(node, device, b)
+  }
+
+  def sendCmdSampleTime() {
+    node.lines.find(_.probes.exists(p => p.probeType == ProbeType.Pulse)) match {
+      case Some(l) =>
+        sendCmdPulseSampleTime(l.sampleTime)
+      case None =>
+    }
+    node.lines.find(_.probes.exists(p => p.probeType == ProbeType.DHT22_T)) match {
+      case Some(l) =>
+        sendCmdDht22SampleTime(l.sampleTime)
+      case None =>
+    }
   }
 
   def verifyXbeeSynch {
@@ -244,38 +291,87 @@ class XbeeNode(val address: String, val device: RemoteXBeeDevice, val node: Node
 
   def responseTimeout: Int = node.sampleTime * 3
 
-  def processInit(time: Duration, retry: Int): Seq[QData] = {
-    try {
-      init()
-    } catch {
-      case e: XBeeException =>
-        val delay = time + (InitDelay + Random.nextInt(InitDelayRandomRange) millis)
-        val r = retry + 1
-        if (r > InitMaxRetry) {
-          logger.warn(s"$this: error in initialization, maximum number of initialization tentatives exceeded ($r), giving up", e)
-          dsp.queueEvent(RemoveActiveNode(address))
-        } else {
-          logger.info(s"$this: error in initialization, tentative n. $r will be tried after $delay", e)
-          dsp.queueEvent(NodeInit(this, delay, r))
-        }
-    }
-    Seq.empty
-  }
-
   def processNodeDisconnectedEvent(retry: Int) = {
     if (retry >= 3) {
       logger.warn(s"$this: identified as disconnected for $retry times, max retries exceeded, giving up.")
       dsp.queueEvent(RemoveActiveNode(address))
+      dsp.queueEvent(AwakeSleepingNode(address))
     } else {
       state = NodeState.Disconnected
       val delay = (node.sampleTime * NodeDiscoveredMax) millis
       val r = retry + 1
       logger.warn(s"$this: identified as disconnected for $retry times, next verification after $delay.")
       dsp.queueEvent(NodeDisconnectedAfter(this, delay, r))
-      if (retry > 2)
-        dsp.queueEvent(AwakeSleepingNode(address))
     }
     Seq.empty
+  }
+
+  def readDHT22(msg: XBeeMessage, time: Instant): Seq[QData] = {
+    parseDHT22Msg(msg.getData) match {
+      case None =>
+        logger.warn(s"$this read DHT22 failure")
+        List.empty
+      case Some(tp) =>
+        val t = if (node.opMode == OpMode.EndDevice) time.toEpochMilli() else uptimeOffsetInMillis + tp._4
+        //        log.debug(s"L=${tp._1}, T=${tp._2}, H=${tp._3}, d=${Instant.ofEpochMilli(t)}")
+        (probeFromXpin(tp._1, ProbeType.DHT22_T), probeFromXpin(tp._1, ProbeType.DHT22_H)) match {
+          case (Some(p_t), Some(p_h)) =>
+            QData(p_t, Data(t, tp._2)) :: QData(p_h, Data(t, tp._3)) :: Nil
+          case _ =>
+            logger.error(s"$this Probe or IO Line not found for xpin ${tp._1}")
+            List.empty
+        }
+    }
+  }
+
+  def parsePulseMsg(b: Array[Byte]): Seq[(Short, Long)] = {
+    val bb = ByteBuffer.wrap(b)
+    if ('P' != bb.get()) {
+      logger.warn("$this pulse message not correct: " + HexUtils.byteArrayToHexString(b))
+      List.empty
+    } else {
+      var l = new ArrayBuffer[(Short, Long)]()
+      for (i <- 1 to b.length / 10) {
+        val xpin = bb.getShort()
+        val uptime = convertUptime(bb.getInt(), bb.getInt())
+        val probe = probeFromXpin(xpin, ProbeType.Pulse)
+        // TODO when power calculation will be implemented on xbee side, power value will be added
+        l += ((xpin, uptime))
+      }
+      //      log.debug(s"pulse $l")
+      l.toSeq
+    }
+  }
+
+  def readPulse(msg: XBeeMessage): Seq[QData] = {
+    parsePulseMsg(msg.getData) flatMap (m => (probeFromXpin(m._1, ProbeType.Pulse) map
+      (p => QData(p, Data(uptimeOffsetInMillis + m._2, calcPower(m._2, p))))))
+  }
+
+  def calcPower(t: Long, p: Probe): Double = {
+    val dt = t - lastTime(p)
+    lastTime(p) = t
+    if (dt > 0) (3600000000.0 / dt) / p.pulsesPerKilowattHour else 0
+  }
+
+  def sendCmdPulseSampleTime(sampleTime: Int) = {
+    logger.debug(s"$this: send Pulse Sample Time $sampleTime")
+    val b = ByteBuffer.allocate(6)
+    b.put('S'.toByte)
+    b.put('P'.toByte)
+    b.put(ByteUtils.intToByteArray(sampleTime))
+    b.array()
+    dsp.queueEvent(SendDataAsync(device, b.array()))
+  }
+
+  def sendCmdDht22SampleTime(sampleTime: Int) = {
+    logger.debug(s"$this: send DHT22 Sample Time $sampleTime")
+    val b = ByteBuffer.allocate(6)
+    b.put('S'.toByte)
+    b.put('D'.toByte)
+    b.put(ByteUtils.intToByteArray(sampleTime))
+    b.array()
+    dsp.queueEvent(SendDataAsync(device, b.array()))
   }
 
   override def toString = s"N(${node.name})"

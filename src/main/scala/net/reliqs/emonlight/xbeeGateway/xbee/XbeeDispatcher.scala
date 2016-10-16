@@ -48,15 +48,15 @@ class XbeeDispatcher(val cfg: Config, val dsp: Dispatcher)
 
   def startDiscovery(): Boolean = {
     //    import scala.collection.JavaConversions._
-//    logger.debug("start discovery")
+    //    logger.debug("start discovery")
     val network = localDevice.getNetwork()
     if (network.isDiscoveryRunning()) {
       logger.warn("request to start discovery when it is already running")
       false
     } else {
       val ln = (cfg.nodes.filter(n => n.opMode == OpMode.EndDevice && n.sampleTime <= 28000))
-      val shortTimeout = (if(ln.isEmpty) 0 else ln.maxBy(_.sampleTime()).sampleTime())
-      val t = Math.max(cfg.discoveryTimeout, (shortTimeout * 2).toLong)
+      val shortTimeout = (if (ln.isEmpty) 0 else ln.maxBy(_.sampleTime()).sampleTime())
+      val t = Math.min(25000, Math.max(cfg.discoveryTimeout, (shortTimeout * 2).toLong))
       logger.info(s"start discovery timeout=$t")
       network.addDiscoveryListener(this)
       network.setDiscoveryTimeout(t)
@@ -65,11 +65,6 @@ class XbeeDispatcher(val cfg: Config, val dsp: Dispatcher)
       logger.info(s"discovery started")
       true
     }
-  }
-
-  def sendDataAsync(device: RemoteXBeeDevice, b: Array[Byte]) = {
-    logger.debug("send " + HexUtils.byteArrayToHexString(b) + " to device " + device.toString);
-    localDevice.sendDataAsync(device, b);
   }
 
   def deviceDiscovered(d: RemoteXBeeDevice): Unit = {
@@ -85,8 +80,20 @@ class XbeeDispatcher(val cfg: Config, val dsp: Dispatcher)
   def discoveryFinished(msg: String): Unit = {
     import scala.collection.JavaConversions._
     logger.debug(s"discovery finished $msg")
-    dsp.queueEvent(DiscoveryFinished(msg))
-    for (d <- localDevice.getNetwork.getDevices) dsp.queueEvent(DeviceDiscovered(d))
+    dsp.queueEvent(DiscoveryFinished(msg, localDevice.getNetwork.getDevices))
+  }
+
+  def addToDiscovery(device: RemoteXBeeDevice) {
+    val net = localDevice.getNetwork
+    if (net.getDevice(device.get64BitAddress) == null) {
+      logger.debug(s"device ${device} added to list of discovered devices")
+      net.addRemoteDevice(device)
+    }
+  }
+
+  def sendDataAsync(device: RemoteXBeeDevice, b: Array[Byte]) = {
+    logger.debug("send " + HexUtils.byteArrayToHexString(b) + " to device " + device.toString);
+    localDevice.sendDataAsync(device, b);
   }
 
   def dataReceived(msg: XBeeMessage): Unit = {
@@ -103,11 +110,13 @@ class XbeeDispatcher(val cfg: Config, val dsp: Dispatcher)
     val r = new RemoteXBeeDevice(localDevice, new XBee64BitAddress(address))
     // Send a Commissioning PushButton command to force the xbee to stay awake for 30 seconds
     try {
+      r.reset()
+      Thread.sleep(1000)
       r.setParameter("CB", Array[Byte](1))
       logger.info(s"Commissioning Pushbutton sent successfully")
       Some(r)
     } catch {
-      case e: XBeeException => logger.info(s"error while trying to awake $address: ${e.getMessage}")
+      case e: XBeeException => logger.info(s"error while trying to awake $address: ${e.getMessage}", e)
     }
     None
   }

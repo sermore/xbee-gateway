@@ -81,7 +81,7 @@ object WebClientTest extends JsonSupport {
     //        .via(poolclientflow)
     //        .runwith(sink.head)
 //    val data = item.toJson.compactPrint
-    val data = Factory.stdMapper.writeValueAsString(item)
+    val data = Factory.jsonMapper.writeValueAsString(item)
     println(s"$item -> $data")
     val responseFuture: Future[HttpResponse] =
       Http().singleRequest(HttpRequest(uri = "http://localhost:8080/h", method = HttpMethods.POST,

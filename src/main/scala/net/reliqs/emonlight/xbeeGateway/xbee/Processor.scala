@@ -21,21 +21,26 @@ import net.reliqs.emonlight.xbeeGateway.xbee.Event._
 import com.digi.xbee.api.exceptions.XBeeException
 import scala.collection.mutable.PriorityQueue
 import java.util.concurrent.BlockingQueue
+import scala.util.Random
 
 object Processor {
+
+  object State extends Enumeration {
+    val Init, Ready, Discovering, NodeInitializing = Value
+  }
 
   def toStr(msg: XBeeMessage): String = s"Msg(${msg.getDevice}, ${msg.getData()(0).toChar}, ${msg.getData.length})"
 }
 
 trait XbeeNodeFactory {
-  def create(address: String, d: RemoteXBeeDevice, n: Node, dsp: Dispatcher): XbeeNode
+  def create(address: String, d: RemoteXBeeDevice, n: Node, proc: Processor, dsp: Dispatcher): XbeeNode
 }
 
 trait NodeFactoring {
 
   class SimpleFactory extends XbeeNodeFactory {
-    override def create(address: String, device: RemoteXBeeDevice, node: Node, dsp: Dispatcher) = {
-      new XbeeNode(address, device, node, dsp)
+    override def create(address: String, device: RemoteXBeeDevice, node: Node, proc: Processor, dsp: Dispatcher) = {
+      new XbeeNode(address, device, node, proc, dsp)
     }
   }
 
@@ -57,6 +62,7 @@ trait NodeEventHandling {
 }
 
 trait Dispatcher { this: EventHandling with LazyLogging =>
+  import scala.collection.JavaConversions._
 
   val queue = new DelayQueue[Event]()
 
@@ -75,8 +81,20 @@ trait Dispatcher { this: EventHandling with LazyLogging =>
     }
   }
 
+  def removeEvent(event: Event) = {
+    var cnt = 0
+    while (queue.remove(event)) { cnt += 1 }
+    cnt
+    //    var cnt = 0
+    //    while (queue.find(e => e == event) match {
+    //      case Some(e) =>
+    //        cnt += 1; queue.remove(e)
+    //      case None => false
+    //    }) {}
+    //    logger.debug(s"removed $cnt events $event")
+  }
+
   def removeEventsForNode(n: NodeEventHandling) {
-    import scala.collection.JavaConversions._
     var cnt = 0
     while (queue.find(e => (e.isInstanceOf[NodeEvent] && e.asInstanceOf[NodeEvent].node == n)) match {
       case Some(e) =>
@@ -105,10 +123,10 @@ trait NodeManager { this: NodeFactoring with LazyLogging =>
     (if (addr != null && addr.nonEmpty) activeNodes.get(addr)
     else activeNodes.values find (n => name != null && name.nonEmpty && n.node.name == name))
 
-  def createActiveNode(addr: String, d: RemoteXBeeDevice, n: Node, dsp: Dispatcher) = {
+  def createActiveNode(addr: String, d: RemoteXBeeDevice, n: Node, proc: Processor, dsp: Dispatcher) = {
     logger.info(s"xbeeNode creation for device $d and node $n address $addr")
     try {
-      val xn = factory.create(addr, d, n, dsp)
+      val xn = factory.create(addr, d, n, proc, dsp)
       activeNodes.put(addr, xn)
     } catch {
       case e: XBeeException => logger.warn(s"xbeeNode creation aborted due to error", e); None
@@ -122,12 +140,8 @@ trait NodeManager { this: NodeFactoring with LazyLogging =>
 trait Processor { this: NodeManager with Dispatcher with EventHandling with LazyLogging =>
   import Processor._
 
-  object State extends Enumeration {
-    val Init, Ready, Discovering = Value
-  }
-
   val cfg: Config
-  val DiscoveryScheduleTime = 10
+  val DiscoveryScheduleTime = 100000
 
   var state: State.Value = State.Init
   val xbeeDispatcher = new XbeeDispatcher(cfg, this)
@@ -147,18 +161,18 @@ trait Processor { this: NodeManager with Dispatcher with EventHandling with Lazy
 
   override def eventHandler: EventHandler = {
     case StartScheduledDiscovering(_)           => startDiscovery()
-    case DeviceDiscovered(d)                    => deviceDiscovered(d)
+    case DeviceDiscovered(d, delay)             => deviceDiscovered(d)
     case DiscoveryError(msg)                    => logger.debug(s"discovery error $msg")
-    case DiscoveryFinished(msg)                 => discoveryFinished(msg)
+    case DiscoveryFinished(msg, devices)        => discoveryFinished(msg, devices)
     case DataReceived(msg, time)                => dataReceived(msg, time)
     case IoSampleReceived(device, sample, time) => ioSampleReceivedHandler(device, sample, time)
     case SendDataAsync(device, b)               => xbeeDispatcher.sendDataAsync(device, b)
     case RemoveActiveNode(address)              => removeActiveNode(address)
-    case AwakeSleepingNode(addr) =>
-      xbeeDispatcher.awakeSleepingNode(addr) match {
-        case Some(r) => queueEvent(DeviceDiscovered(r))
-        case None    => logger.debug(s"awakening failed for $addr")
-      }
+    case SignalStartNodeInit()                  =>
+      assert(state != State.Discovering && state != State.NodeInitializing); state = State.NodeInitializing
+    case SignalEndNodeInit()                    =>
+      assert(state == State.NodeInitializing); state = State.Ready
+    case AwakeSleepingNode(addr, delay)         => processAwakeSleepingNode(addr)
   }
 
   def verifySynch() {
@@ -185,27 +199,37 @@ trait Processor { this: NodeManager with Dispatcher with EventHandling with Lazy
    * @param d
    */
   def deviceDiscovered(d: RemoteXBeeDevice) {
-    val addr = d.get64BitAddress.toString
-    findActiveNode(addr) match {
-      case None =>
-        cfg.findNode(d.getNodeID, addr) match {
-          case None => logger.warn(s"device discovered $d ignored as it is not listed in configuration")
-          case Some(n) =>
-            logger.info(s"device discovered $d")
-            createActiveNode(addr, d, n, this)
-        }
-      case Some(xn) =>
-        logger.debug(s"device discovered $d already mapped to $xn")
+    if (state == State.Discovering && state == State.NodeInitializing) {
+      logger.debug("postpone deviceDiscover $d waiting for completion of $state")
+      queueEvent(DeviceDiscovered(d, (15 + Random.nextInt(10)) seconds))
+    } else {
+      val addr = d.get64BitAddress.toString
+      findActiveNode(addr) match {
+        case None =>
+          cfg.findNode(d.getNodeID, addr) match {
+            case None => logger.warn(s"device discovered $d ignored as it is not listed in configuration")
+            case Some(n) =>
+              logger.info(s"device discovered $d")
+              createActiveNode(addr, d, n, this, this)
+          }
+        case Some(xn) =>
+          logger.debug(s"device discovered $d already mapped to $xn")
+      }
     }
   }
 
-  def discoveryFinished(msg: String) {
+  def discoveryFinished(msg: String, devices: Seq[RemoteXBeeDevice]) {
     state = State.Ready
     //    assert(!xbeeDispatcher.localDevice.getNetwork.isDiscoveryRunning())
-    // check if nodes are still missing: 
+    // check if nodes are still missing:
+    var delay = (0 seconds)
+    devices filter (d => findActiveNode(d.get64BitAddress.toString, d.getNodeID).isEmpty) foreach (d => {
+      delay += (15 seconds)
+      queueEvent(DeviceDiscovered(d, delay))
+    })
     val mn = notActiveNodes
     if (mn.nonEmpty) {
-      val delay = (((mn.minBy(_.sampleTime)).sampleTime * DiscoveryScheduleTime) millis)
+      val delay = (((mn.minBy(_.sampleTime)).sampleTime * 10 + DiscoveryScheduleTime + Random.nextInt(DiscoveryScheduleTime / 3)) millis)
       logger.info(s"discovery finished, it will be performed again after $delay because of missing nodes: $mn")
       // if we know the address for the missing end devices, try to awake them
       //      mn.filter(n => n.address != null && n.address.nonEmpty).foreach(n => queueEvent(AwakeSleepingNode(n.address)))
@@ -217,7 +241,7 @@ trait Processor { this: NodeManager with Dispatcher with EventHandling with Lazy
       //      }
       //      queueEvent(StartDiscovering)
       // FIXME how to discover?
-      //      queueEvent(StartScheduledDiscovering(delay))
+      queueEvent(StartScheduledDiscovering(delay))
     } else
       logger.info(s"discovery finished, all nodes have been identified.")
   }
@@ -243,20 +267,29 @@ trait Processor { this: NodeManager with Dispatcher with EventHandling with Lazy
         true
       case None =>
         // search for a node with same address, consider it as just discovered if we are not inside a discovering state
-        if (state != State.Discovering) {
-          findNode(addr, device.getNodeID) match {
-            case Some(n) =>
-              logger.debug(s"DeviceDiscovered event for device ${device} queued after receiving a message")
-              queueEvent(DeviceDiscovered(device))
-              // FIXME how queue msg to be handled?
-              true
-            case None =>
-              // node not found, or the address is not present in the node or the device hasn't yet a name, in the latter case a discovery is queued
-              // FIXME double check for discovery frequency not being too high
-              if (state != State.Discovering && device.getNodeID.isEmpty) queueEvent(StartScheduledDiscovering())
-              false
-          }
-        } else false
+        //        if (state != State.Discovering) {
+        findNode(addr, device.getNodeID) match {
+          case Some(n) =>
+            if (state == State.Discovering) {
+              xbeeDispatcher.addToDiscovery(device)
+            } else {
+              logger.debug(s"DeviceDiscovered event for device ${device} queued after receiving a message outside discovering")
+              val e = DeviceDiscovered(device, 0 seconds)
+              removeEvent(e)
+              queueEvent(e)
+            }
+            // FIXME how queue msg to be handled?
+            true
+          case None =>
+            // node not found, or the address is not present in the node or the device hasn't yet a name, in the latter case a discovery is queued
+            // FIXME double check for discovery frequency not being too high
+            if (state != State.Discovering && device.getNodeID.isEmpty) {
+              queue.remove(StartScheduledDiscovering())
+              queueEvent(StartScheduledDiscovering())
+            }
+            false
+        }
+      //        } else false
     }
   }
 
@@ -269,6 +302,17 @@ trait Processor { this: NodeManager with Dispatcher with EventHandling with Lazy
       //remove remaining queued events to this node
       case Some(n) => removeEventsForNode(n)
       case None    => logger.warn(s"failed to remove node with address $address")
+    }
+  }
+
+  def processAwakeSleepingNode(addr: String) = {
+    if (state == State.Ready) {
+      xbeeDispatcher.awakeSleepingNode(addr) match {
+        case Some(r) => queueEvent(DeviceDiscovered(r, 10 seconds))
+        case None    => logger.debug(s"awakening failed for $addr")
+      }
+    } else {
+      queueEvent(AwakeSleepingNode(addr, 10 seconds))
     }
   }
 

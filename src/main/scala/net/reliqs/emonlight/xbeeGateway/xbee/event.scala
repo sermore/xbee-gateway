@@ -29,53 +29,80 @@ trait Delaying extends Event {
   }
 }
 
+trait EventEquality extends Event {
+  override def equals(other: Any) = other match {
+    case that: Event => that.getClass == this.getClass
+    case _           => false
+  }
+
+  override def hashCode = getClass.hashCode()
+
+}
+
 class ProcessorEvent extends Event
 
 class NodeEvent(val node: NodeEventHandling) extends Event
 
-case class StartScheduledDiscovering(override val time: Duration = Duration.Zero) extends ProcessorEvent with Delaying
-
-case class DeviceDiscovered(d: RemoteXBeeDevice) extends ProcessorEvent
-
-case class DiscoveryError(msg: String) extends ProcessorEvent
-
-case class DiscoveryFinished(msg: String) extends ProcessorEvent
-
-case class AwakeSleepingNode(address: String) extends ProcessorEvent
-
-case class DataReceived(msg: XBeeMessage, time: Instant) extends ProcessorEvent {
-  override def toString = s"DR(${Processor.toStr(msg)}, ${time})"
-}
-
-case class NodeDataReceived(override val node: NodeEventHandling, msg: XBeeMessage, time: Instant) extends NodeEvent(node) {
-  override def toString = s"NDR($node, ${Processor.toStr(msg)}, $time)"
-}
-
-case class IoSampleReceived(device: RemoteXBeeDevice, sample: IOSample, time: Instant) extends ProcessorEvent
-
-case class NodeIoSampleReceived(override val node: NodeEventHandling, sample: IOSample, time: Instant) extends NodeEvent(node) {
-  override def toString = s"NIO($node, ${sample}, $time)"
-}
-
-case class SendDataAsync(device: RemoteXBeeDevice, b: Array[Byte]) extends ProcessorEvent
-
-case class VerifySynchAfter(override val node: NodeEventHandling, override val time: Duration) extends NodeEvent(node) with Delaying
-
-case class VerifySynchCancel(override val node: NodeEventHandling) extends NodeEvent(node)
-
-case class NodeDisconnectedAfter(override val node: NodeEventHandling, 
-    override val time: Duration, retry: Int = 1) extends NodeEvent(node) with Delaying {
+trait NodeEquality extends NodeEvent {
   override def equals(other: Any) = other match {
-    case that: NodeDisconnectedAfter => node.equals(that.node)
-    case _                           => false
+    case that: NodeEvent => that.getClass == this.getClass && node.equals(that.node)
+    case _               => false
   }
 
   override def hashCode = node.hashCode()
 }
 
+case class StartScheduledDiscovering(override val time: Duration = Duration.Zero)
+  extends ProcessorEvent with Delaying with EventEquality
+
+case class DeviceDiscovered(d: RemoteXBeeDevice, override val time: Duration) extends ProcessorEvent with Delaying {
+  override def equals(other: Any) = other match {
+    case that: DeviceDiscovered => that.d == this.d
+    case _                      => false
+  }
+
+  override def hashCode = DeviceDiscovered.hashCode() + d.hashCode()
+}
+
+case class DiscoveryError(msg: String) extends ProcessorEvent
+
+case class DiscoveryFinished(msg: String, devices: Seq[RemoteXBeeDevice]) extends ProcessorEvent
+
+case class AwakeSleepingNode(address: String, override val time: Duration = Duration.Zero)
+  extends ProcessorEvent with Delaying
+
+case class DataReceived(msg: XBeeMessage, time: Instant) extends ProcessorEvent {
+  override def toString = s"DR(${Processor.toStr(msg)}, ${time})"
+}
+
+case class NodeDataReceived(override val node: NodeEventHandling, msg: XBeeMessage, time: Instant)
+    extends NodeEvent(node) {
+  override def toString = s"NDR($node, ${Processor.toStr(msg)}, $time)"
+}
+
+case class IoSampleReceived(device: RemoteXBeeDevice, sample: IOSample, time: Instant) extends ProcessorEvent
+
+case class NodeIoSampleReceived(override val node: NodeEventHandling, sample: IOSample, time: Instant)
+    extends NodeEvent(node) {
+  override def toString = s"NIO($node, ${sample}, $time)"
+}
+
+case class SendDataAsync(device: RemoteXBeeDevice, b: Array[Byte]) extends ProcessorEvent
+
+case class VerifySynchAfter(override val node: NodeEventHandling, override val time: Duration = Duration.Zero)
+  extends NodeEvent(node) with Delaying
+
+case class NodeDisconnectedAfter(override val node: NodeEventHandling, override val time: Duration, retry: Int = 1)
+  extends NodeEvent(node) with Delaying with NodeEquality
+
 case class RemoveActiveNode(address: String) extends ProcessorEvent
 
-case class NodeInit(override val node: NodeEventHandling, override val time: Duration = Duration.Zero, retry: Int = 1) extends NodeEvent(node) with Delaying
+case class NodeInit(override val node: NodeEventHandling, override val time: Duration = Duration.Zero, retry: Int = 1)
+  extends NodeEvent(node) with Delaying with NodeEquality
+
+case class SignalStartNodeInit() extends ProcessorEvent
+
+case class SignalEndNodeInit() extends ProcessorEvent
 
 object Event {
   type EventHandler = PartialFunction[Event, Unit]

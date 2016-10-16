@@ -101,6 +101,6 @@ class HttpServerDispatcher(parent: ActorRef, cfg: Agent[Config], name: String) e
 
   def sendData(data: ServerData) = {
     http.singleRequest(HttpRequest(uri = server.url, method = HttpMethods.POST,
-      entity = HttpEntity(ContentTypes.`application/json`, Factory.stdMapper.writeValueAsString(data)))).pipeTo(self)
+      entity = HttpEntity(ContentTypes.`application/json`, Factory.jsonMapper.writeValueAsString(data)))).pipeTo(self)
   }
 }

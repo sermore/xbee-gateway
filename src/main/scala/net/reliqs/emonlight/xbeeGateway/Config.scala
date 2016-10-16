@@ -215,6 +215,7 @@ case class Config(
     receiveTimeout: Int = 5000,
     //    sendRate: Int = 10000,
     savePath: String = ".",
+    applyConfig: Boolean = true,
     //    resetCmd: String = "", 
     nodes: List[Node],
     servers: List[Server]) {
@@ -279,12 +280,12 @@ class DispatchBus extends EventBus with LookupClassification {
 }
 
 object Factory {
-  lazy val stdMapper = {
+  lazy val jsonMapper = {
     val m = new ObjectMapper()
     m.registerModule(DefaultScalaModule)
   }
 
-  lazy val mapper = buildMapper
+  lazy val confMapper = buildMapper
 
   private def buildMapper: ObjectMapper = {
     val m = new ObjectMapper()
@@ -296,7 +297,7 @@ object Factory {
 
   def read(filePath: String): Config = {
     val src = new File(filePath)
-    val c = mapper.readValue(src, classOf[Config])
+    val c = confMapper.readValue(src, classOf[Config])
     Config.setCfg(c)
     c
   }
@@ -308,7 +309,7 @@ object Factory {
 
   def save[T](res: T, filePath: String) {
     val f = new File(filePath)
-    mapper.writeValue(f, res)
+    confMapper.writeValue(f, res)
   }
 
 }

@@ -1,17 +1,19 @@
 package net.reliqs.emonlight.xbeeGateway
 
+import scala.concurrent.duration._
+import scala.language.postfixOps
+
 import org.scalatest.WordSpec
 import com.digi.xbee.api.io.IOMode
 import com.digi.xbee.api.io.IOLine
-import akka.agent.Agent
-import scala.concurrent.Await
-import scala.concurrent.duration._
+import net.reliqs.emonlight.xbeeGateway.xbee.StartScheduledDiscovering
+import net.reliqs.emonlight.xbeeGateway.xbee.DiscoveryError
 
 class ConfigSpec extends WordSpec {
 
-  "A Config" should {
+  "A Config" should {    
     "handle json serialization/deserialization for line and node classes" in {
-      val m = Factory.mapper
+      val m = Factory.confMapper
 
       val lp1 = new Probe("P1", ProbeType.DHT22_T, 0) :: new Probe("P2", ProbeType.DHT22_H, 0) :: Nil
       val lp2 = new Probe("P3", ProbeType.Pulse, 1200) :: Nil
@@ -58,7 +60,7 @@ class ConfigSpec extends WordSpec {
 }""")
     }
     "handle json serialization/deserialization for Config class" in {
-      val m = Factory.mapper
+      val m = Factory.confMapper
 
       val lp1 = new Probe("P1", ProbeType.DHT22_T) :: new Probe("P2", ProbeType.DHT22_H) :: Nil
       val lp2 = new Probe("P3", ProbeType.Pulse, 1200) :: Nil
@@ -102,6 +104,7 @@ class ConfigSpec extends WordSpec {
   discoverySchedule : 0,
   receiveTimeout : 2000,
   savePath : ".",
+  applyConfig : true,
   nodes : [ {
     name : "n1",
     address : "addr1",
@@ -172,6 +175,7 @@ class ConfigSpec extends WordSpec {
   discoverySchedule : 0,
   receiveTimeout : 2000,
   savePath : ".",
+  applyConfig : false,
   nodes : [ {
     name : "n1",
     address : "addr1",
@@ -222,8 +226,8 @@ class ConfigSpec extends WordSpec {
     } ]
   } ]
 }"""
-      val c = Factory.mapper.readValue(s1, classOf[Config])
-      val s2 = Factory.mapper.writeValueAsString(c)
+      val c = Factory.confMapper.readValue(s1, classOf[Config])
+      val s2 = Factory.confMapper.writeValueAsString(c)
       assert(s1 == s2)
     }
   }

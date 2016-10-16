@@ -31,6 +31,7 @@ import scala.concurrent.duration._
 import java.util.concurrent.TimeUnit
 import scala.util.Success
 import scala.util.Failure
+import java.util.concurrent.TimeoutException
 
 object ProcessorActor {
 
@@ -38,7 +39,7 @@ object ProcessorActor {
   case object Process
   case object Discovery
 
-  def props(cfg: Agent[Config], parent: ActorRef): Props = Props(new ProcessorActor(cfg, parent))
+  def props(cfg: Agent[Config], dsp: Dispatcher, parent: ActorRef): Props = Props(new ProcessorActor(cfg, dsp, parent))
 
 }
 
@@ -47,28 +48,28 @@ object ProcessorActor {
  *  On startup perform a discovery operation in order to find active nodes.
  *  The discovery operation is repeated on regular basis in case Router nodes listed in configuration have not been identified.
  */
-class ProcessorActor(cfg: Agent[Config], parent: ActorRef) extends Actor with ActorLogging {
+class ProcessorActor(cfg: Agent[Config], dsp: Dispatcher, parent: ActorRef) extends Actor with ActorLogging {
   import ProcessorActor._
 
   val master = context.parent
   val dBus = cfg().dBus
-  val processor = new FullProcessor(cfg())
-  processor.init()
   parent ! InitComplete
 
   def process() {
     import context.dispatcher
-    val f = Future(processor.process())
-    f onComplete {      
-      case Success(q) => q foreach(dBus.publish(_)); self ! Process
-      case Failure(_) => self ! Process
+    val f = Future(dsp.process())
+    try {
+      val result = Await.result(f, 1 seconds)
+      result foreach (dBus.publish(_))
+    } catch {
+      case e: TimeoutException =>
     }
-//    Await.result(f, 1 second) //foreach (dBus.publish(_))
+    self ! Process
   }
 
   def receive = {
-    case Discovery => processor.queueEvent(StartScheduledDiscovering())
-    case Process => process()
+    case Discovery => dsp.queueEvent(StartScheduledDiscovering())
+    case Process   => process()
   }
 
 }

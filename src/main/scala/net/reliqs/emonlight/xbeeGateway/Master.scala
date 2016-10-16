@@ -8,14 +8,14 @@ import akka.actor.Actor
 import akka.actor.ActorLogging
 import akka.actor.ActorRef
 import akka.actor.Props
-import akka.actor.Status
 import akka.actor.Terminated
 import akka.agent.Agent
+import akka.http.scaladsl.Http
 import net.reliqs.emonlight.xbeeGateway.send.Dispatcher
 import net.reliqs.emonlight.xbeeGateway.send.HttpDispatcherProvider
-import net.reliqs.emonlight.xbeeGateway.xbee.ProcessorActor
 import net.reliqs.emonlight.xbeeGateway.send.HttpServerDispatcher
-import akka.http.scaladsl.Http
+import net.reliqs.emonlight.xbeeGateway.xbee.FullProcessor
+import net.reliqs.emonlight.xbeeGateway.xbee.ProcessorActor
 
 object Master {
   case object Kill
@@ -29,7 +29,9 @@ class Master(val cfg: Config) extends Actor with ActorLogging {
   import scala.concurrent.ExecutionContext.Implicits.global
 
   val agent = Agent(cfg)
-  val processor = context.actorOf(ProcessorActor.props(agent, self), "processor")
+  val xbeeProc = new FullProcessor(cfg)
+  xbeeProc.init()
+  val processor = context.actorOf(ProcessorActor.props(agent, xbeeProc, self), "processor")
   context.watch(processor)
   //  var children: Set[ActorRef] = Set.empty
 
