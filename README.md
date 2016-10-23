@@ -1,7 +1,7 @@
 Xbee Gateway
 ============
 
-[Akka](www.akka.io)/Scala application acting as a gateway between [Xbee devices](https://www.digi.com/lp/xbee) and 
+[Akka](http://akka.io)/Scala application acting as a gateway between [Xbee devices](https://www.digi.com/lp/xbee) and 
 an [Emonlight Web application](https://github.com/sermore/emonlight-web). 
 The XBee devices are handled using the [XBee Java Library](http://docs.digi.com/display/XBJLIB/XBee+Java+Library).
 
