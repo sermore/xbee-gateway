@@ -21,8 +21,8 @@ class Event extends Delayed {
 }
 
 trait Delaying extends Event {
-  val time: Duration = Duration.Zero
-  val timeout: Long = Instant.now.toEpochMilli() + time.toMillis
+  val time: Duration
+  val timeout: Long = if (time.isFinite()) Instant.now.toEpochMilli() + time.toMillis else 0
 
   override def getDelay(tUnit: TimeUnit): Long = {
     tUnit.convert(timeout - Instant.now().toEpochMilli(), TimeUnit.MILLISECONDS)
@@ -55,7 +55,7 @@ trait NodeEquality extends NodeEvent {
 case class StartScheduledDiscovering(override val time: Duration = Duration.Zero)
   extends ProcessorEvent with Delaying with EventEquality
 
-case class DeviceDiscovered(d: RemoteXBeeDevice, override val time: Duration) extends ProcessorEvent with Delaying {
+case class DeviceDiscovered(d: RemoteXBeeDevice, override val time:Duration) extends ProcessorEvent with Delaying {
   override def equals(other: Any) = other match {
     case that: DeviceDiscovered => that.d == this.d
     case _                      => false
@@ -95,14 +95,15 @@ case class VerifySynchAfter(override val node: NodeEventHandling, override val t
 case class NodeDisconnectedAfter(override val node: NodeEventHandling, override val time: Duration, retry: Int = 1)
   extends NodeEvent(node) with Delaying with NodeEquality
 
-case class RemoveActiveNode(address: String) extends ProcessorEvent
+case class RemoveActiveNode(address: String, override val time: Duration = Duration.MinusInf) extends ProcessorEvent with Delaying
 
 case class NodeInit(override val node: NodeEventHandling, override val time: Duration = Duration.Zero, retry: Int = 1)
   extends NodeEvent(node) with Delaying with NodeEquality
 
-case class SignalStartNodeInit() extends ProcessorEvent
+case class SignalStartNodeInit(override val time: Duration = Duration.MinusInf) extends ProcessorEvent with Delaying
 
-case class SignalEndNodeInit() extends ProcessorEvent
+case class SignalEndNodeInit(override val time: Duration = Duration.MinusInf) extends ProcessorEvent with Delaying
+
 
 object Event {
   type EventHandler = PartialFunction[Event, Unit]

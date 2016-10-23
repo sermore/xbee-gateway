@@ -86,8 +86,9 @@ class XbeeNode(val address: String, val device: RemoteXBeeDevice, val node: Node
       logger.debug(s"$this: handle ${sample} received at $time")
       handleNodeDisconnection()
       processIOSampleReceived(sample, time)
-    case NodeInit(_, time, retry) => processInit(time, retry)
-    case VerifySynchAfter(_, _) => sendCmdSynch(); Seq.empty
+    case NodeInit(_, time, retry)           => processInit(time, retry)
+    case VerifySynchAfter(_, _)             =>
+      sendCmdSynch(); Seq.empty
     case NodeDisconnectedAfter(_, _, retry) => processNodeDisconnectedEvent(retry)
   }
 
@@ -142,20 +143,20 @@ class XbeeNode(val address: String, val device: RemoteXBeeDevice, val node: Node
 
   /**
    * Xbee setup.
-   * TODO send a RESET in case the configuration fails too many times.
+   * A RESET is sent in case we are retrying the configuration.
    * TODO read first configuration and apply new conf only if it is different
    */
   def xbeeSetup(retry: Int) {
     device.enableApplyConfigurationChanges(true)
-    if (retry > 1) {
-      device.reset()
-      Thread.sleep(1000)
-    }
     //    if (node.opMode == OpMode.EndDevice || toShort(device.getParameter("SM")) != 0) {
     device.setParameter("CB", Array[Byte](1))
     logger.info(s"$this: commissioning pushbutton command sent successfully")
     Thread.sleep(1000)
     //    }
+    if (retry > 1) {
+      device.reset()
+      Thread.sleep(1000)
+    }
     val sampleTime = node.sampleTime
     device.enableApplyConfigurationChanges(false)
     if (node.opMode == OpMode.EndDevice) {
@@ -178,10 +179,10 @@ class XbeeNode(val address: String, val device: RemoteXBeeDevice, val node: Node
 
     if (node.opMode == OpMode.EndDevice)
       device.executeParameter("SI")
-//    else {
-//      device.reset()
-////      device.executeParameter("FR")
-//    }
+    //    else {
+    //      device.reset()
+    ////      device.executeParameter("FR")
+    //    }
   }
 
   def processDataReceivedMessage(msg: XBeeMessage, time: Instant): Seq[QData] = {
@@ -312,10 +313,16 @@ class XbeeNode(val address: String, val device: RemoteXBeeDevice, val node: Node
         logger.warn(s"$this read DHT22 failure")
         List.empty
       case Some(tp) =>
-        val t = if (node.opMode == OpMode.EndDevice) time.toEpochMilli() else uptimeOffsetInMillis + tp._4
+        val t = if (node.opMode == OpMode.EndDevice) time.toEpochMilli() else uptimeOffsetInMillis + tp._5
+        //        val vcc = tp._4
+        //        if (vcc < 3500) {
+        notifyLowVoltage(tp._4)
+        //        }
         //        log.debug(s"L=${tp._1}, T=${tp._2}, H=${tp._3}, d=${Instant.ofEpochMilli(t)}")
-        (probeFromXpin(tp._1, ProbeType.DHT22_T), probeFromXpin(tp._1, ProbeType.DHT22_H)) match {
-          case (Some(p_t), Some(p_h)) =>
+        (probeFromXpin(tp._1, ProbeType.DHT22_T), probeFromXpin(tp._1, ProbeType.DHT22_H), probeFromXpin(tp._1, ProbeType.Vcc)) match {
+          case (Some(p_t), Some(p_h), Some(p_vcc)) =>
+            QData(p_t, Data(t, tp._2)) :: QData(p_h, Data(t, tp._3)) :: QData(p_vcc, Data(t, tp._4)) :: Nil
+          case (Some(p_t), Some(p_h), None) =>
             QData(p_t, Data(t, tp._2)) :: QData(p_h, Data(t, tp._3)) :: Nil
           case _ =>
             logger.error(s"$this Probe or IO Line not found for xpin ${tp._1}")

@@ -1,12 +1,10 @@
 package net.reliqs.emonlight.xbeeGateway.xbee
 
 import java.time.Instant
-import java.util.concurrent.DelayQueue
-import java.util.concurrent.TimeUnit
 
-import scala.concurrent.duration.Duration
 import scala.concurrent.duration.DurationInt
 import scala.language.postfixOps
+import scala.util.Random
 
 import com.digi.xbee.api.RemoteXBeeDevice
 import com.digi.xbee.api.io.IOSample
@@ -14,14 +12,8 @@ import com.digi.xbee.api.models.XBeeMessage
 import com.typesafe.scalalogging.LazyLogging
 
 import net.reliqs.emonlight.xbeeGateway.Config
-import net.reliqs.emonlight.xbeeGateway.Node
 import net.reliqs.emonlight.xbeeGateway.OpMode
-import net.reliqs.emonlight.xbeeGateway.QData
-import net.reliqs.emonlight.xbeeGateway.xbee.Event._
-import com.digi.xbee.api.exceptions.XBeeException
-import scala.collection.mutable.PriorityQueue
-import java.util.concurrent.BlockingQueue
-import scala.util.Random
+import net.reliqs.emonlight.xbeeGateway.xbee.Event.EventHandler
 
 object Processor {
 
@@ -30,111 +22,6 @@ object Processor {
   }
 
   def toStr(msg: XBeeMessage): String = s"Msg(${msg.getDevice}, ${msg.getData()(0).toChar}, ${msg.getData.length})"
-}
-
-trait XbeeNodeFactory {
-  def create(address: String, d: RemoteXBeeDevice, n: Node, proc: Processor, dsp: Dispatcher): XbeeNode
-}
-
-trait NodeFactoring {
-
-  class SimpleFactory extends XbeeNodeFactory {
-    override def create(address: String, device: RemoteXBeeDevice, node: Node, proc: Processor, dsp: Dispatcher) = {
-      new XbeeNode(address, device, node, proc, dsp)
-    }
-  }
-
-  val factory = new SimpleFactory()
-}
-
-trait EventHandling {
-  def eventHandler: EventHandler
-}
-
-//trait Dispatching { this : EventHandling =>
-//  class MyDispatcher(val eventHandler: EventHandler) extends Dispatcher with EventHandling with LazyLogging
-//  
-//  val dsp: Dispatcher = new MyDispatcher(eventHandler)
-//}
-
-trait NodeEventHandling {
-  def handle: MessageHandler
-}
-
-trait Dispatcher { this: EventHandling with LazyLogging =>
-  import scala.collection.JavaConversions._
-
-  val queue = new DelayQueue[Event]()
-
-  def queueEvent(event: Event) = queue.offer(event)
-
-  def handle(e: Event): Seq[QData] = {
-    //    logger.debug(s"event $e")
-    if (e.isInstanceOf[ProcessorEvent]) {
-      eventHandler.orElse(PartialFunction.empty)(e)
-      Seq.empty
-    } else {
-      val ne = e.asInstanceOf[NodeEvent]
-      val q = ne.node.handle(ne)
-      logger.debug(s"data Produced $q")
-      q
-    }
-  }
-
-  def removeEvent(event: Event) = {
-    var cnt = 0
-    while (queue.remove(event)) { cnt += 1 }
-    cnt
-    //    var cnt = 0
-    //    while (queue.find(e => e == event) match {
-    //      case Some(e) =>
-    //        cnt += 1; queue.remove(e)
-    //      case None => false
-    //    }) {}
-    //    logger.debug(s"removed $cnt events $event")
-  }
-
-  def removeEventsForNode(n: NodeEventHandling) {
-    var cnt = 0
-    while (queue.find(e => (e.isInstanceOf[NodeEvent] && e.asInstanceOf[NodeEvent].node == n)) match {
-      case Some(e) =>
-        cnt += 1; queue.remove(e)
-      case None => false
-    }) {}
-    logger.debug(s"removed $cnt events related to $n")
-  }
-
-  def process(): Seq[QData] = {
-    //    logger.debug("poll")
-    Option(queue.poll(1, TimeUnit.SECONDS)) match {
-      case Some(e) => handle(e)
-      case None    => Seq.empty
-    }
-  }
-
-}
-
-trait NodeManager { this: NodeFactoring with LazyLogging =>
-
-  // FIXME make private
-  val activeNodes = collection.mutable.Map[String, XbeeNode]()
-
-  def findActiveNode(addr: String, name: String = ""): Option[XbeeNode] =
-    (if (addr != null && addr.nonEmpty) activeNodes.get(addr)
-    else activeNodes.values find (n => name != null && name.nonEmpty && n.node.name == name))
-
-  def createActiveNode(addr: String, d: RemoteXBeeDevice, n: Node, proc: Processor, dsp: Dispatcher) = {
-    logger.info(s"xbeeNode creation for device $d and node $n address $addr")
-    try {
-      val xn = factory.create(addr, d, n, proc, dsp)
-      activeNodes.put(addr, xn)
-    } catch {
-      case e: XBeeException => logger.warn(s"xbeeNode creation aborted due to error", e); None
-    }
-  }
-
-  def removeActiveNode(address: String): Option[XbeeNode] = activeNodes.remove(address)
-
 }
 
 trait Processor { this: NodeManager with Dispatcher with EventHandling with LazyLogging =>
@@ -167,12 +54,12 @@ trait Processor { this: NodeManager with Dispatcher with EventHandling with Lazy
     case DataReceived(msg, time)                => dataReceived(msg, time)
     case IoSampleReceived(device, sample, time) => ioSampleReceivedHandler(device, sample, time)
     case SendDataAsync(device, b)               => xbeeDispatcher.sendDataAsync(device, b)
-    case RemoveActiveNode(address)              => removeActiveNode(address)
-    case SignalStartNodeInit()                  =>
+    case RemoveActiveNode(address, _)           => removeActiveNode(address)
+    case SignalStartNodeInit(_) =>
       assert(state != State.Discovering && state != State.NodeInitializing); state = State.NodeInitializing
-    case SignalEndNodeInit()                    =>
+    case SignalEndNodeInit(_) =>
       assert(state == State.NodeInitializing); state = State.Ready
-    case AwakeSleepingNode(addr, delay)         => processAwakeSleepingNode(addr)
+    case AwakeSleepingNode(addr, delay) => processAwakeSleepingNode(addr)
   }
 
   def verifySynch() {
@@ -181,7 +68,7 @@ trait Processor { this: NodeManager with Dispatcher with EventHandling with Lazy
   }
 
   /**
-   * Blocking until timeout is reached.
+   * The digi API call will block until timeout is reached.
    * @param time
    * @param retry
    * @return
@@ -199,8 +86,8 @@ trait Processor { this: NodeManager with Dispatcher with EventHandling with Lazy
    * @param d
    */
   def deviceDiscovered(d: RemoteXBeeDevice) {
-    if (state == State.Discovering && state == State.NodeInitializing) {
-      logger.debug("postpone deviceDiscover $d waiting for completion of $state")
+    if (state == State.Discovering || state == State.NodeInitializing) {
+      logger.debug(s"postpone deviceDiscover $d waiting for completion of $state")
       queueEvent(DeviceDiscovered(d, (15 + Random.nextInt(10)) seconds))
     } else {
       val addr = d.get64BitAddress.toString
@@ -209,7 +96,7 @@ trait Processor { this: NodeManager with Dispatcher with EventHandling with Lazy
           cfg.findNode(d.getNodeID, addr) match {
             case None => logger.warn(s"device discovered $d ignored as it is not listed in configuration")
             case Some(n) =>
-              logger.info(s"device discovered $d")
+              logger.info(s"active node creation for $d")
               createActiveNode(addr, d, n, this, this)
           }
         case Some(xn) =>
@@ -273,10 +160,12 @@ trait Processor { this: NodeManager with Dispatcher with EventHandling with Lazy
             if (state == State.Discovering) {
               xbeeDispatcher.addToDiscovery(device)
             } else {
-              logger.debug(s"DeviceDiscovered event for device ${device} queued after receiving a message outside discovering")
-              val e = DeviceDiscovered(device, 0 seconds)
-              removeEvent(e)
-              queueEvent(e)
+              val e = DeviceDiscovered(device, 500 millis)
+              if (!existsEvent(e)) {
+                logger.debug(s"DeviceDiscovered event for device ${device} queued after receiving a message outside discovering")
+                //              removeEvent(e)
+                queueEvent(e)
+              }
             }
             // FIXME how queue msg to be handled?
             true

@@ -37,10 +37,10 @@ trait XbeeNodeExt { this: LazyLogging =>
     12 -> IOLine.DIO12,
     13 -> IOLine.DIO3_AD3)
 
-  def parseDHT22Msg(b: Array[Byte]): Option[(Short, Double, Double, Long)] = {
-    var res: Option[(Short, Double, Double, Long)] = None
+  def parseDHT22Msg(b: Array[Byte]): Option[(Short, Double, Double, Short, Long)] = {
+    var res: Option[(Short, Double, Double, Short, Long)] = None
     val bb = ByteBuffer.wrap(b)
-    if (b.length == 16 && bb.get() == 'D') {
+    if (b.length == 18 && bb.get() == 'D') {
       val xpin = bb.getShort()
       val uptime = convertUptime(bb.getInt(), bb.getInt());
       val b0 = bb.get()
@@ -48,13 +48,14 @@ trait XbeeNodeExt { this: LazyLogging =>
       val b2 = bb.get()
       val b3 = bb.get()
       val b4 = bb.get()
+      val vcc = bb.getShort;
       if (((b0 + b1 + b2 + b3) & 0xFF).asInstanceOf[Byte] != b4) {
         logger.warn("error reading dht22 data")
       } else {
         val humidity = 0.0 + (((b0 & 0xff) << 8) + (b1 & 0xff)) / 10.0
         val temperature = 0.0 + (((b2 & 0x7F) << 8) + (b3 & 0xff)) / 10.0
-//        logger.debug(s"$temperature, $humidity, $uptime")
-        res = Some((xpin, temperature, humidity, uptime))
+//        logger.debug(s"$temperature, $humidity, $vcc, $uptime")
+        res = Some((xpin, temperature, humidity, vcc, uptime))
       }
     }
     res

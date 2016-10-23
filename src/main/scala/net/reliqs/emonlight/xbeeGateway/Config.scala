@@ -50,7 +50,7 @@ class OpModeType extends TypeReference[OpMode.type]
 
 object ProbeType extends Enumeration {
   type ProbeType = Value
-  val Pulse, Sample, DHT22_T, DHT22_H = Value
+  val Pulse, Sample, DHT22_T, DHT22_H, Vcc = Value
 }
 class ProbeTypeType extends TypeReference[ProbeType.type]
 
@@ -110,7 +110,9 @@ class Line(
   def removeProbe(p: Probe) = _probes -= p
 
   def validate(): String = {
-    val dht22 = probes.length > 0 && (probes(0).probeType == ProbeType.DHT22_H || probes(0).probeType == ProbeType.DHT22_T)
+    val dht22_h = probes.exists(_.probeType == ProbeType.DHT22_H)
+    val dht22_t = probes.exists(_.probeType == ProbeType.DHT22_T)
+    val dht22 = dht22_h || dht22_t
     val str =
       (if (mode == null) " - mode can't be null\n" else "") +
         (if (line == null) " - line can't be null\n" else "") +
@@ -122,15 +124,14 @@ class Line(
         (if (probes(0).probeType == ProbeType.Pulse && mode != IOMode.DIGITAL_IN) " - mode should be Digital In when probe type is pulse\n" else "") +
         (if (probes(0).probeType == ProbeType.Pulse && access != LineAccess.LocalOnly) " - access should be local only when probe type is pulse\n" else "") +
         (if (dht22 && access != LineAccess.LocalOnly) " - access should be Local Only when probe type is DHT22\n" else "") +
-        (if (dht22 && probes.length != 2) " - 2 probes must be present when probe type is DHT22\n" else "")
-    // FIXME handle the case of first probe not DHT22
-    (if (dht22 && probes.length == 2 &&
-      (probes(0).probeType == ProbeType.DHT22_T && probes(1).probeType != ProbeType.DHT22_H ||
-        probes(0).probeType == ProbeType.DHT22_H && probes(1).probeType != ProbeType.DHT22_T)) " - probes types should be DHT22_T and DHT22_H\n" else "") +
-      (if (probes.map(_.name).toSet.size == probes.length) " - probes should have unique names\n" else "") +
-      probes.map(_.validate).fold("")((acc, v) => acc + v)
-    if (str.nonEmpty) s"Line $this should:\n" + str else ""
+        (if (dht22 && !dht22_t) " - missing probe DHT22_T\n" else "") +
+        (if (dht22 && !dht22_h) " - missing probe DHT22_H\n" else "") +
+        (if (probes.map(_.name).toSet.size < probes.length) " - probes should have unique names\n" else "") +
+        probes.map(_.validate).fold("")((acc, v) => acc + v)
+    if (str.nonEmpty) s"$this should:\n" + str else ""
   }
+  
+  override def toString = s"Line[$line]" 
 }
 
 //object Node {
@@ -244,7 +245,7 @@ case class Config(
 
   def findNode(name: String, addr: String) = nodes.find(n => n.name == name || (addr.nonEmpty && n.address == addr))
   def timeout = (nodes maxBy (_.sampleTime())).sampleTime()
-  
+
   def validate(): String = {
     val str = (if (serialPort.isEmpty) " - serial port should not be empy\n" else "") +
       (if (baudRate <= 0) " - baudRate should be > 0\n" else "") +

@@ -57,12 +57,10 @@ class ProcessorActor(cfg: Agent[Config], dsp: Dispatcher, parent: ActorRef) exte
 
   def process() {
     import context.dispatcher
-    val f = Future(dsp.process())
-    try {
-      val result = Await.result(f, 1 seconds)
-      result foreach (dBus.publish(_))
-    } catch {
-      case e: TimeoutException =>
+    val f = Future(dsp.process(1 second))
+    f onComplete {
+      case Success(q) => q foreach (dBus.publish(_))
+      case Failure(e) => log.error(e, s"error while processing an event")
     }
     self ! Process
   }

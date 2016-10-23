@@ -29,6 +29,7 @@ class ProcessorSpec extends WordSpec {
     "handle events" in {
       assert(StartScheduledDiscovering(40 millis) == StartScheduledDiscovering())
       assert(StartScheduledDiscovering(40 millis) != DiscoveryError(""))
+      assert(SignalStartNodeInit() == SignalStartNodeInit()) 
       val n1 = new MyNodeH()
       val n2 = new MyNodeH()
       my.queueEvent(NodeInit(n1, 1000 millis))
@@ -89,7 +90,7 @@ object ProcessorSpec {
     
     def run(time: Int): Seq[QData] = {
       val q = ArrayBuffer[QData]()
-      for (t <- 1 to time) q ++= process()
+      for (t <- 1 to time) q ++= process(1 second)
       q
     }
   }
