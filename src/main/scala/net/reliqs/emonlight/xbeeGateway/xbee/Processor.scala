@@ -91,8 +91,9 @@ trait Processor { this: NodeManager with Dispatcher with EventHandling with Lazy
    */
   def deviceDiscovered(d: RemoteXBeeDevice) {
     if (state == State.Discovering || state == State.NodeInitializing) {
-      logger.debug(s"postpone deviceDiscover $d waiting for completion of $state")
-      queueEvent(DeviceDiscovered(d, (15 + Random.nextInt(10)) seconds))
+      val delay = (60 + Random.nextInt(30))
+      logger.debug(s"postpone deviceDiscover $d waiting for completion of $state, delayed of $delay seconds")
+      queueEvent(DeviceDiscovered(d, delay seconds))
     } else {
       val addr = d.get64BitAddress.toString
       findActiveNode(addr) match {

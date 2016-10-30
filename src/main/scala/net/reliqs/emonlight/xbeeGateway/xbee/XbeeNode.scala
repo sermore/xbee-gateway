@@ -105,7 +105,7 @@ class XbeeNode(val address: String, val device: RemoteXBeeDevice, val node: Node
 
   def processInit(time: Duration, retry: Int): Seq[QData] = {
     if (proc.cfg.applyConfig && proc.state != Processor.State.Ready) {
-      dsp.queueEvent(NodeInit(this, (InitDelay + Random.nextInt(InitDelayRandomRange)) millis))
+      dsp.queueEvent(NodeInit(this, (InitDelay * 3 + Random.nextInt(InitDelayRandomRange * 3)) millis))
     } else {
       dsp.queueEvent(SignalStartNodeInit())
       try {
