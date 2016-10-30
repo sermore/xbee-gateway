@@ -53,7 +53,7 @@ object XbeeNode {
   def toShort(b: Array[Byte]): Short = ByteUtils.byteArrayToShort(b)
 
   val InitMaxRetry = 5
-  val InitDelay = 30000
+  val InitDelay = 10000
   val InitDelayRandomRange = 10000
 }
 
@@ -86,14 +86,14 @@ class XbeeNode(val address: String, val device: RemoteXBeeDevice, val node: Node
       logger.debug(s"$this: handle ${sample} received at $time")
       handleNodeDisconnection()
       processIOSampleReceived(sample, time)
-    case NodeInit(_, time, retry)           => processInit(time, retry)
-    case VerifySynchAfter(_, _)             =>
+    case NodeInit(_, time, retry) => processInit(time, retry)
+    case VerifySynchAfter(_, _) =>
       sendCmdSynch(); Seq.empty
     case NodeDisconnectedAfter(_, _, retry) => processNodeDisconnectedEvent(retry)
   }
 
   def handleNodeDisconnection() {
-    dsp.removeEvent(NodeDisconnectedAfter(this, Duration.Zero))
+    dsp.removeAllEvents(NodeDisconnectedAfter(this, Duration.Zero))
     //    assert(ok)
     val delay = ((node.sampleTime * NodeDiscoveredMax) millis)
     logger.debug(s"$this: next NodeDisconnected verification in $delay")
@@ -119,7 +119,7 @@ class XbeeNode(val address: String, val device: RemoteXBeeDevice, val node: Node
             dsp.queueEvent(RemoveActiveNode(address))
           } else {
             logger.info(s"$this: error in initialization, tentative n. $r will be tried after $delay", e)
-            dsp.removeEvent(NodeInit(this, delay, r))
+            dsp.removeAllEvents(NodeInit(this, delay, r))
             dsp.queueEvent(NodeInit(this, delay, r))
           }
       } finally {
@@ -131,9 +131,13 @@ class XbeeNode(val address: String, val device: RemoteXBeeDevice, val node: Node
 
   def init(retry: Int) {
     logger.info(s"$this: starting initialization")
-    if (proc.cfg.applyConfig)
-      xbeeSetup(retry)
-    dsp.removeEvent(NodeDisconnectedAfter(this, Duration.Zero))
+    if (proc.cfg.applyConfig) {
+      setup(retry)
+    }
+    if (node.opMode == OpMode.EndDevice) {
+      sendCmdSampleTime();
+    }
+    dsp.removeAllEvents(NodeDisconnectedAfter(this, Duration.Zero))
     dsp.queueEvent(NodeDisconnectedAfter(this, node.sampleTime() * NodeDiscoveredMax millis))
     if (node.opMode != OpMode.EndDevice)
       dsp.queueEvent(VerifySynchAfter(this))
@@ -146,17 +150,17 @@ class XbeeNode(val address: String, val device: RemoteXBeeDevice, val node: Node
    * A RESET is sent in case we are retrying the configuration.
    * TODO read first configuration and apply new conf only if it is different
    */
-  def xbeeSetup(retry: Int) {
+  def setup(retry: Int) {
     device.enableApplyConfigurationChanges(true)
     //    if (node.opMode == OpMode.EndDevice || toShort(device.getParameter("SM")) != 0) {
+    if (retry > 2) {
+      device.reset()
+      Thread.sleep(1000)
+    }
     device.setParameter("CB", Array[Byte](1))
     logger.info(s"$this: commissioning pushbutton command sent successfully")
     Thread.sleep(1000)
     //    }
-    if (retry > 1) {
-      device.reset()
-      Thread.sleep(1000)
-    }
     val sampleTime = node.sampleTime
     device.enableApplyConfigurationChanges(false)
     if (node.opMode == OpMode.EndDevice) {
@@ -225,7 +229,7 @@ class XbeeNode(val address: String, val device: RemoteXBeeDevice, val node: Node
         nextSynch = now.plus(SynchLongTimeOutHours, ChronoUnit.HOURS)
         uptimeOffsetInMillis = offset
         //          synchScheduler.cancel()
-        dsp.removeEvent(VerifySynchAfter(this))
+        dsp.removeAllEvents(VerifySynchAfter(this))
         // after each Xbee reset we have to reconfigure sample times for pulses and dht22
         sendCmdSampleTime()
         state = NodeState.InSynch
@@ -293,16 +297,22 @@ class XbeeNode(val address: String, val device: RemoteXBeeDevice, val node: Node
   def responseTimeout: Int = node.sampleTime * 3
 
   def processNodeDisconnectedEvent(retry: Int) = {
-    if (retry >= 3) {
-      logger.warn(s"$this: identified as disconnected for $retry times, max retries exceeded, giving up.")
-      dsp.queueEvent(RemoveActiveNode(address))
-      dsp.queueEvent(AwakeSleepingNode(address))
+    if (proc.state != Processor.State.Ready) {
+      val delay = 10 + Random.nextInt(5)
+      logger.debug(s"$this postponed NodeDisconnectedEvent due to state not ready, delayed of $delay seconds")
+      dsp.queueEvent(NodeDisconnectedAfter(this, delay seconds, retry))
     } else {
-      state = NodeState.Disconnected
-      val delay = (node.sampleTime * NodeDiscoveredMax) millis
-      val r = retry + 1
-      logger.warn(s"$this: identified as disconnected for $retry times, next verification after $delay.")
-      dsp.queueEvent(NodeDisconnectedAfter(this, delay, r))
+      if (retry >= 3) {
+        logger.warn(s"$this: identified as disconnected for $retry times, max retries exceeded, giving up.")
+        dsp.queueEvent(RemoveActiveNode(address))
+        dsp.queueEvent(AwakeSleepingNode(address, (60 + Random.nextInt(30)) seconds))
+      } else {
+        state = NodeState.Disconnected
+        val delay = (node.sampleTime * NodeDiscoveredMax) millis
+        val r = retry + 1
+        logger.warn(s"$this: identified as disconnected for $retry times, next verification after $delay seconds.")
+        dsp.queueEvent(NodeDisconnectedAfter(this, delay, r))
+      }
     }
     Seq.empty
   }

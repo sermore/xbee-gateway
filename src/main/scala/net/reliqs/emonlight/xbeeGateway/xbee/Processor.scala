@@ -56,9 +56,13 @@ trait Processor { this: NodeManager with Dispatcher with EventHandling with Lazy
     case SendDataAsync(device, b)               => xbeeDispatcher.sendDataAsync(device, b)
     case RemoveActiveNode(address, _)           => removeActiveNode(address)
     case SignalStartNodeInit(_) =>
-      assert(state != State.Discovering && state != State.NodeInitializing); state = State.NodeInitializing
-    case SignalEndNodeInit(_) =>
-      assert(state == State.NodeInitializing); state = State.Ready
+      assert(state == State.Ready); state = State.NodeInitializing
+    case SignalEndNodeInit(n) =>
+      if (state != State.NodeInitializing) {
+        logger.error(s"state $state incorrect while handling SignalEndNodeInit($n)")
+      } else {
+        state = State.Ready
+      }
     case AwakeSleepingNode(addr, delay) => processAwakeSleepingNode(addr)
   }
 
@@ -197,11 +201,13 @@ trait Processor { this: NodeManager with Dispatcher with EventHandling with Lazy
   def processAwakeSleepingNode(addr: String) = {
     if (state == State.Ready) {
       xbeeDispatcher.awakeSleepingNode(addr) match {
-        case Some(r) => queueEvent(DeviceDiscovered(r, 10 seconds))
+        case Some(r) => queueEvent(DeviceDiscovered(r, (1 + Random.nextInt(4)) seconds))
         case None    => logger.debug(s"awakening failed for $addr")
       }
     } else {
-      queueEvent(AwakeSleepingNode(addr, 10 seconds))
+      val delay = 10 + Random.nextInt(5)
+      logger.debug(s"postponed AwakeSleepingNode $addr due to state not ready, delayed of $delay seconds")
+      queueEvent(AwakeSleepingNode(addr, delay seconds))
     }
   }
 

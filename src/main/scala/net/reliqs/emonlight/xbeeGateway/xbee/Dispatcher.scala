@@ -36,7 +36,7 @@ trait Dispatcher { this: EventHandling with LazyLogging =>
 
   def existsEvent(event: Event) = queue.exists { e => e == event }
 
-  def removeEvent(event: Event) = {
+  def removeAllEvents(event: Event) = {
     var cnt = 0
     while (queue.remove(event)) { cnt += 1 }
     cnt

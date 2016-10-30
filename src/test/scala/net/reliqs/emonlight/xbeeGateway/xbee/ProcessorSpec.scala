@@ -29,17 +29,22 @@ class ProcessorSpec extends WordSpec {
     "handle events" in {
       assert(StartScheduledDiscovering(40 millis) == StartScheduledDiscovering())
       assert(StartScheduledDiscovering(40 millis) != DiscoveryError(""))
-      assert(SignalStartNodeInit() == SignalStartNodeInit()) 
+      assert(SignalStartNodeInit() == SignalStartNodeInit())
       val n1 = new MyNodeH()
       val n2 = new MyNodeH()
+      assert(NodeDisconnectedAfter(n1, 10 seconds) == NodeDisconnectedAfter(n1, 20 seconds))
       my.queueEvent(NodeInit(n1, 1000 millis))
       my.queueEvent(StartScheduledDiscovering())
       my.queueEvent(StartScheduledDiscovering(100 millis))
-      assert(my.removeEvent(StartScheduledDiscovering()) == 2)
+      my.queueEvent(NodeDisconnectedAfter(n1, 10 seconds))
+      my.queueEvent(NodeDisconnectedAfter(n1, 5 seconds))
+      my.queueEvent(NodeDisconnectedAfter(n2, 5 seconds))
+      assert(my.removeAllEvents(StartScheduledDiscovering()) == 2)
+      assert(my.removeAllEvents(NodeDisconnectedAfter(n1, Duration.Zero)) == 2)
       my.queueEvent(NodeInit(n2))
-      assert(my.removeEvent(NodeInit(n1, 100 millis)) == 1)
-      assert(my.removeEvent(NodeInit(n1, 800 millis)) == 0)
-      assert(my.removeEvent(NodeInit(n2, 100 millis)) == 1)
+      assert(my.removeAllEvents(NodeInit(n1, 100 millis)) == 1)
+      assert(my.removeAllEvents(NodeInit(n1, 800 millis)) == 0)
+      assert(my.removeAllEvents(NodeInit(n2, 100 millis)) == 1)
     }
     "do time summing" in {
       val x:Duration = 30000 millis
